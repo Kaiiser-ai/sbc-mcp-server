@@ -271,7 +271,11 @@ def list_requirements(category: str = "general") -> str:
 print("🚀 Starting Saudi Building Code MCP Server...")
 
 if __name__ == "__main__":
-    import uvicorn
+    import os
     port = int(os.environ.get("PORT", 8000))
     print(f"🌐 Running on port {port}")
-    mcp.run(transport="sse", port=port)
+    
+    # Set the port via environment variable for FastMCP
+    os.environ["FASTMCP_PORT"] = str(port)
+    
+    mcp.run(transport="sse")
