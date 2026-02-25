@@ -271,4 +271,7 @@ def list_requirements(category: str = "general") -> str:
 print("🚀 Starting Saudi Building Code MCP Server...")
 
 if __name__ == "__main__":
-    mcp.run()
+    import os
+    port = int(os.environ.get("PORT", 8000))
+    print(f"🌐 Starting HTTP server on port {port}")
+    mcp.run(transport="streamable-http", host="0.0.0.0", port=port)
