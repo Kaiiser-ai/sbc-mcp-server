@@ -223,15 +223,3 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
     print(f"🌐 Running on port {port}")
     uvicorn.run(app, host="0.0.0.0", port=port)
-```
-
----
-
-## Also update `requirements.txt`:
-```
-fastapi>=0.104.0
-uvicorn>=0.24.0
-openai>=1.0.0
-chromadb>=0.4.0
-PyPDF2>=3.0.0
-python-dotenv>=1.0.0
