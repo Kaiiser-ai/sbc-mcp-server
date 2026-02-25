@@ -269,7 +269,9 @@ def list_requirements(category: str = "general") -> str:
 
 # Initialize on startup
 print("🚀 Starting Saudi Building Code MCP Server...")
-initialize_rag()
 
 if __name__ == "__main__":
-    mcp.run(transport="sse")
+    import uvicorn
+    port = int(os.environ.get("PORT", 8000))
+    print(f"🌐 Running on port {port}")
+    mcp.run(transport="sse", port=port)
