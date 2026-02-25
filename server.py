@@ -271,4 +271,4 @@ def list_requirements(category: str = "general") -> str:
 print("🚀 Starting Saudi Building Code MCP Server...")
 
 if __name__ == "__main__":
-    mcp.run(transport="sse", host="0.0.0.0")
+    mcp.run()
