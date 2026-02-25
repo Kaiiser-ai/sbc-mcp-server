@@ -6,7 +6,7 @@
   },
   "deploy": {
     "startCommand": "python server.py",
-    "healthcheckPath": "/",
-    "restartPolicyType": "ON_FAILURE"
+    "restartPolicyType": "ON_FAILURE",
+    "healthcheckPath": null
   }
 }
