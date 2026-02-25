@@ -1,18 +1,19 @@
 """
 Saudi Building Code MCP Server
-RAG-based building code assistant using MCP protocol
-Uses OpenAI embeddings for faster deployment
+Using FastAPI for HTTP transport
 """
 
 import os
-from mcp.server.fastmcp import FastMCP
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+import uvicorn
 from openai import OpenAI
 import chromadb
 import PyPDF2
 from pathlib import Path
 
-# Initialize MCP server
-mcp = FastMCP("Saudi Building Code Assistant")
+# Initialize FastAPI
+app = FastAPI(title="Saudi Building Code MCP Server")
 
 # Initialize OpenAI client
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
@@ -29,35 +30,27 @@ def get_embedding(text: str) -> list:
     return response.data[0].embedding
 
 def initialize_rag():
-    """Initialize the RAG system with vector store"""
+    """Initialize the RAG system"""
     global collection
     
     print("🔄 Initializing RAG system...")
     
-    # Initialize ChromaDB (in-memory for simplicity)
     chroma_client = chromadb.Client()
-    
-    # Get or create collection
     collection = chroma_client.get_or_create_collection(
-        name="saudi_building_code",
-        metadata={"description": "Saudi Building Code - Staircase Requirements"}
+        name="saudi_building_code"
     )
     print(f"✅ Vector store ready with {collection.count()} documents")
     
-    # If empty, load the PDF
     if collection.count() == 0:
         load_pdf()
 
 def load_pdf():
-    """Load and chunk the Saudi Building Code PDF"""
+    """Load and chunk the PDF"""
     global collection
     
-    # Try multiple possible paths
     possible_paths = [
         Path("./Full SBC staircase.pdf"),
-        Path("./data/sbc_staircase.pdf"),
         Path("/app/Full SBC staircase.pdf"),
-        Path("/app/data/sbc_staircase.pdf")
     ]
     
     pdf_path = None
@@ -72,7 +65,6 @@ def load_pdf():
     
     print(f"📄 Loading PDF: {pdf_path}")
     
-    # Extract text from PDF
     text = ""
     with open(pdf_path, 'rb') as file:
         reader = PyPDF2.PdfReader(file)
@@ -81,11 +73,9 @@ def load_pdf():
             if page_text:
                 text += page_text + "\n"
     
-    # Chunk the text
     chunks = chunk_text(text, chunk_size=500, overlap=50)
     print(f"📝 Created {len(chunks)} chunks")
     
-    # Create embeddings and store
     for i, chunk in enumerate(chunks):
         try:
             embedding = get_embedding(chunk)
@@ -93,15 +83,14 @@ def load_pdf():
                 ids=[f"chunk_{i}"],
                 embeddings=[embedding],
                 documents=[chunk],
-                metadatas=[{"source": "SBC_Staircase", "chunk_id": i}]
+                metadatas=[{"source": "SBC", "chunk_id": i}]
             )
         except Exception as e:
             print(f"⚠️ Error embedding chunk {i}: {e}")
     
-    print(f"✅ Loaded {collection.count()} chunks into vector store")
+    print(f"✅ Loaded {collection.count()} chunks")
 
 def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> list:
-    """Split text into overlapping chunks"""
     chunks = []
     start = 0
     while start < len(text):
@@ -113,19 +102,15 @@ def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> list:
     return chunks
 
 def search_similar(query: str, k: int = 3) -> list:
-    """Search for similar documents in the vector store"""
     global collection
     
-    if collection is None:
+    if collection is None or collection.count() == 0:
         initialize_rag()
     
     if collection.count() == 0:
         return []
     
-    # Create query embedding
     query_embedding = get_embedding(query)
-    
-    # Search
     results = collection.query(
         query_embeddings=[query_embedding],
         n_results=k
@@ -133,145 +118,120 @@ def search_similar(query: str, k: int = 3) -> list:
     
     return results['documents'][0] if results['documents'] else []
 
-@mcp.tool()
-def query_building_code(question: str) -> str:
-    """
-    Query the Saudi Building Code for staircase requirements.
+# MCP-style endpoints
+@app.get("/")
+async def root():
+    return {"status": "ok", "service": "Saudi Building Code MCP Server"}
+
+@app.get("/health")
+async def health():
+    return {"status": "healthy"}
+
+@app.get("/mcp")
+async def mcp_info():
+    return {
+        "name": "Saudi Building Code Assistant",
+        "version": "1.0.0",
+        "tools": [
+            {
+                "name": "query_building_code",
+                "description": "Query the Saudi Building Code for staircase requirements",
+                "parameters": {
+                    "question": {"type": "string", "description": "Your question"}
+                }
+            },
+            {
+                "name": "check_compliance",
+                "description": "Check if dimensions comply with code",
+                "parameters": {
+                    "stair_width": {"type": "number"},
+                    "riser_height": {"type": "number"},
+                    "tread_depth": {"type": "number"},
+                    "headroom": {"type": "number"}
+                }
+            }
+        ]
+    }
+
+@app.post("/mcp/tools/query_building_code")
+async def query_building_code(request: Request):
+    data = await request.json()
+    question = data.get("question", "")
     
-    Args:
-        question: Your question about building code requirements
-    
-    Returns:
-        Relevant building code information
-    """
-    # Ensure RAG is initialized
-    if collection is None or collection.count() == 0:
-        initialize_rag()
-    
-    # Search for relevant chunks
     relevant_docs = search_similar(question, k=3)
     
     if not relevant_docs:
-        return "No relevant information found in the Saudi Building Code database."
+        return {"result": "No relevant information found."}
     
-    # Format response
     context = "\n\n---\n\n".join(relevant_docs)
     
-    response = f"""## Saudi Building Code - Relevant Sections
+    return {
+        "result": f"## Saudi Building Code\n\n**Question:** {question}\n\n### Retrieved:\n\n{context}"
+    }
 
-**Question:** {question}
-
-### Retrieved Information:
-
-{context}
-
----
-*Source: Saudi Building Code (SBC) - Staircase Requirements*
-"""
+@app.post("/mcp/tools/check_compliance")
+async def check_compliance(request: Request):
+    data = await request.json()
     
-    return response
-
-@mcp.tool()
-def check_compliance(
-    stair_width: float = None,
-    riser_height: float = None,
-    tread_depth: float = None,
-    headroom: float = None
-) -> str:
-    """
-    Check if staircase dimensions comply with Saudi Building Code.
-    
-    Args:
-        stair_width: Width of staircase in mm
-        riser_height: Height of each step in mm
-        tread_depth: Depth of each step in mm
-        headroom: Vertical clearance in mm
-    
-    Returns:
-        Compliance status and recommendations
-    """
     results = []
     all_compliant = True
     
+    stair_width = data.get("stair_width")
+    riser_height = data.get("riser_height")
+    tread_depth = data.get("tread_depth")
+    headroom = data.get("headroom")
+    
     if stair_width is not None:
         if stair_width >= 1100:
-            results.append(f"✅ Stair width ({stair_width}mm): COMPLIANT (min 1100mm)")
+            results.append(f"✅ Stair width ({stair_width}mm): COMPLIANT")
         else:
-            results.append(f"❌ Stair width ({stair_width}mm): NON-COMPLIANT (min 1100mm required)")
+            results.append(f"❌ Stair width ({stair_width}mm): NON-COMPLIANT (min 1100mm)")
             all_compliant = False
     
     if riser_height is not None:
         if 150 <= riser_height <= 180:
-            results.append(f"✅ Riser height ({riser_height}mm): COMPLIANT (150-180mm)")
+            results.append(f"✅ Riser height ({riser_height}mm): COMPLIANT")
         else:
-            results.append(f"❌ Riser height ({riser_height}mm): NON-COMPLIANT (150-180mm required)")
+            results.append(f"❌ Riser height ({riser_height}mm): NON-COMPLIANT (150-180mm)")
             all_compliant = False
     
     if tread_depth is not None:
         if tread_depth >= 280:
-            results.append(f"✅ Tread depth ({tread_depth}mm): COMPLIANT (min 280mm)")
+            results.append(f"✅ Tread depth ({tread_depth}mm): COMPLIANT")
         else:
-            results.append(f"❌ Tread depth ({tread_depth}mm): NON-COMPLIANT (min 280mm required)")
+            results.append(f"❌ Tread depth ({tread_depth}mm): NON-COMPLIANT (min 280mm)")
             all_compliant = False
     
     if headroom is not None:
         if headroom >= 2100:
-            results.append(f"✅ Headroom ({headroom}mm): COMPLIANT (min 2100mm)")
+            results.append(f"✅ Headroom ({headroom}mm): COMPLIANT")
         else:
-            results.append(f"❌ Headroom ({headroom}mm): NON-COMPLIANT (min 2100mm required)")
+            results.append(f"❌ Headroom ({headroom}mm): NON-COMPLIANT (min 2100mm)")
             all_compliant = False
-    
-    if not results:
-        return "Please provide at least one dimension to check."
     
     status = "✅ ALL COMPLIANT" if all_compliant else "⚠️ NON-COMPLIANT"
     
-    return f"""## Compliance Check Results
-
-**Status:** {status}
-
-### Details:
-{chr(10).join(results)}
-
----
-*Based on Saudi Building Code (SBC)*
-"""
-
-@mcp.tool()
-def list_requirements(category: str = "general") -> str:
-    """
-    List building code requirements by category.
-    
-    Args:
-        category: Category - "general", "residential", "commercial", "emergency"
-    
-    Returns:
-        List of requirements
-    """
-    if collection is None or collection.count() == 0:
-        initialize_rag()
-    
-    query = f"{category} staircase requirements"
-    relevant_docs = search_similar(query, k=5)
-    
-    if not relevant_docs:
-        return f"No requirements found for category: {category}"
-    
-    context = "\n\n".join(relevant_docs)
-    
-    return f"""## Saudi Building Code - {category.title()} Requirements
-
-{context}
-
----
-*Source: Saudi Building Code (SBC)*
-"""
+    return {"result": f"## Compliance Check\n\n**Status:** {status}\n\n" + "\n".join(results)}
 
 # Initialize on startup
-print("🚀 Starting Saudi Building Code MCP Server...")
+@app.on_event("startup")
+async def startup_event():
+    print("🚀 Starting Saudi Building Code Server...")
+    initialize_rag()
 
 if __name__ == "__main__":
-    import os
     port = int(os.environ.get("PORT", 8000))
-    print(f"🌐 Starting HTTP server on port {port}")
-    mcp.run(transport="streamable-http", host="0.0.0.0", port=port)
+    print(f"🌐 Running on port {port}")
+    uvicorn.run(app, host="0.0.0.0", port=port)
+```
+
+---
+
+## Also update `requirements.txt`:
+```
+fastapi>=0.104.0
+uvicorn>=0.24.0
+openai>=1.0.0
+chromadb>=0.4.0
+PyPDF2>=3.0.0
+python-dotenv>=1.0.0
