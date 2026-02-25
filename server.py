@@ -52,7 +52,7 @@ def load_pdf():
     """Load and chunk the Saudi Building Code PDF"""
     global collection, embedding_model
     
-    pdf_path = Path("./data/sbc_staircase.pdf")
+   pdf_path = Path("./Full SBC staircase.pdf")
     
     if not pdf_path.exists():
         print("⚠️ PDF not found at ./data/sbc_staircase.pdf")
