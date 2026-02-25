@@ -1,44 +1,44 @@
 """
 Saudi Building Code MCP Server
 RAG-based building code assistant using MCP protocol
+Uses OpenAI embeddings for faster deployment
 """
 
 import os
-import json
 from mcp.server.fastmcp import FastMCP
-from sentence_transformers import SentenceTransformer
+from openai import OpenAI
 import chromadb
-from chromadb.config import Settings
 import PyPDF2
 from pathlib import Path
 
 # Initialize MCP server
 mcp = FastMCP("Saudi Building Code Assistant")
 
+# Initialize OpenAI client
+client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+
 # Global variables
-vectorstore = None
-embedding_model = None
 collection = None
 
+def get_embedding(text: str) -> list:
+    """Get embedding from OpenAI"""
+    response = client.embeddings.create(
+        model="text-embedding-3-small",
+        input=text
+    )
+    return response.data[0].embedding
+
 def initialize_rag():
-    """Initialize the RAG system with embeddings and vector store"""
-    global vectorstore, embedding_model, collection
+    """Initialize the RAG system with vector store"""
+    global collection
     
     print("🔄 Initializing RAG system...")
     
-    # Load embedding model
-    embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
-    print("✅ Embedding model loaded")
-    
-    # Initialize ChromaDB
-    vectorstore = chromadb.Client(Settings(
-        chroma_db_impl="duckdb+parquet",
-        persist_directory="./chroma_db",
-        anonymized_telemetry=False
-    ))
+    # Initialize ChromaDB (in-memory for simplicity)
+    chroma_client = chromadb.Client()
     
     # Get or create collection
-    collection = vectorstore.get_or_create_collection(
+    collection = chroma_client.get_or_create_collection(
         name="saudi_building_code",
         metadata={"description": "Saudi Building Code - Staircase Requirements"}
     )
@@ -50,12 +50,24 @@ def initialize_rag():
 
 def load_pdf():
     """Load and chunk the Saudi Building Code PDF"""
-    global collection, embedding_model
+    global collection
     
-   pdf_path = Path("./Full SBC staircase.pdf")
+    # Try multiple possible paths
+    possible_paths = [
+        Path("./Full SBC staircase.pdf"),
+        Path("./data/sbc_staircase.pdf"),
+        Path("/app/Full SBC staircase.pdf"),
+        Path("/app/data/sbc_staircase.pdf")
+    ]
     
-    if not pdf_path.exists():
-        print("⚠️ PDF not found at ./data/sbc_staircase.pdf")
+    pdf_path = None
+    for path in possible_paths:
+        if path.exists():
+            pdf_path = path
+            break
+    
+    if pdf_path is None:
+        print("⚠️ PDF not found!")
         return
     
     print(f"📄 Loading PDF: {pdf_path}")
@@ -65,7 +77,9 @@ def load_pdf():
     with open(pdf_path, 'rb') as file:
         reader = PyPDF2.PdfReader(file)
         for page in reader.pages:
-            text += page.extract_text() + "\n"
+            page_text = page.extract_text()
+            if page_text:
+                text += page_text + "\n"
     
     # Chunk the text
     chunks = chunk_text(text, chunk_size=500, overlap=50)
@@ -73,15 +87,18 @@ def load_pdf():
     
     # Create embeddings and store
     for i, chunk in enumerate(chunks):
-        embedding = embedding_model.encode(chunk).tolist()
-        collection.add(
-            ids=[f"chunk_{i}"],
-            embeddings=[embedding],
-            documents=[chunk],
-            metadatas=[{"source": "SBC_Staircase", "chunk_id": i}]
-        )
+        try:
+            embedding = get_embedding(chunk)
+            collection.add(
+                ids=[f"chunk_{i}"],
+                embeddings=[embedding],
+                documents=[chunk],
+                metadatas=[{"source": "SBC_Staircase", "chunk_id": i}]
+            )
+        except Exception as e:
+            print(f"⚠️ Error embedding chunk {i}: {e}")
     
-    print(f"✅ Loaded {len(chunks)} chunks into vector store")
+    print(f"✅ Loaded {collection.count()} chunks into vector store")
 
 def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> list:
     """Split text into overlapping chunks"""
@@ -97,13 +114,16 @@ def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> list:
 
 def search_similar(query: str, k: int = 3) -> list:
     """Search for similar documents in the vector store"""
-    global collection, embedding_model
+    global collection
     
-    if collection is None or embedding_model is None:
+    if collection is None:
         initialize_rag()
     
+    if collection.count() == 0:
+        return []
+    
     # Create query embedding
-    query_embedding = embedding_model.encode(query).tolist()
+    query_embedding = get_embedding(query)
     
     # Search
     results = collection.query(
@@ -119,11 +139,15 @@ def query_building_code(question: str) -> str:
     Query the Saudi Building Code for staircase requirements.
     
     Args:
-        question: Your question about building code requirements (e.g., "What is the minimum stair width?")
+        question: Your question about building code requirements
     
     Returns:
-        Relevant building code information with citations
+        Relevant building code information
     """
+    # Ensure RAG is initialized
+    if collection is None or collection.count() == 0:
+        initialize_rag()
+    
     # Search for relevant chunks
     relevant_docs = search_similar(question, k=3)
     
@@ -135,7 +159,7 @@ def query_building_code(question: str) -> str:
     
     response = f"""## Saudi Building Code - Relevant Sections
 
-Based on your question: "{question}"
+**Question:** {question}
 
 ### Retrieved Information:
 
@@ -158,10 +182,10 @@ def check_compliance(
     Check if staircase dimensions comply with Saudi Building Code.
     
     Args:
-        stair_width: Width of staircase in mm (minimum usually 1100mm)
-        riser_height: Height of each step in mm (typically 150-180mm)
-        tread_depth: Depth of each step in mm (typically 280-300mm)
-        headroom: Vertical clearance in mm (minimum usually 2100mm)
+        stair_width: Width of staircase in mm
+        riser_height: Height of each step in mm
+        tread_depth: Depth of each step in mm
+        headroom: Vertical clearance in mm
     
     Returns:
         Compliance status and recommendations
@@ -169,7 +193,6 @@ def check_compliance(
     results = []
     all_compliant = True
     
-    # SBC typical requirements (adjust based on actual code)
     if stair_width is not None:
         if stair_width >= 1100:
             results.append(f"✅ Stair width ({stair_width}mm): COMPLIANT (min 1100mm)")
@@ -201,17 +224,17 @@ def check_compliance(
     if not results:
         return "Please provide at least one dimension to check."
     
-    status = "✅ ALL DIMENSIONS COMPLIANT" if all_compliant else "⚠️ SOME DIMENSIONS NON-COMPLIANT"
+    status = "✅ ALL COMPLIANT" if all_compliant else "⚠️ NON-COMPLIANT"
     
     return f"""## Compliance Check Results
 
-{status}
+**Status:** {status}
 
 ### Details:
 {chr(10).join(results)}
 
 ---
-*Based on Saudi Building Code (SBC) requirements*
+*Based on Saudi Building Code (SBC)*
 """
 
 @mcp.tool()
@@ -220,17 +243,19 @@ def list_requirements(category: str = "general") -> str:
     List building code requirements by category.
     
     Args:
-        category: Category of requirements - "general", "residential", "commercial", "emergency"
+        category: Category - "general", "residential", "commercial", "emergency"
     
     Returns:
-        List of requirements for the specified category
+        List of requirements
     """
-    # Search for category-specific information
+    if collection is None or collection.count() == 0:
+        initialize_rag()
+    
     query = f"{category} staircase requirements"
     relevant_docs = search_similar(query, k=5)
     
     if not relevant_docs:
-        return f"No specific requirements found for category: {category}"
+        return f"No requirements found for category: {category}"
     
     context = "\n\n".join(relevant_docs)
     
@@ -243,15 +268,8 @@ def list_requirements(category: str = "general") -> str:
 """
 
 # Initialize on startup
+print("🚀 Starting Saudi Building Code MCP Server...")
 initialize_rag()
 
 if __name__ == "__main__":
-    import uvicorn
-    
-    # Get port from environment (Railway sets this)
-    port = int(os.environ.get("PORT", 8000))
-    
-    print(f"🚀 Starting MCP Server on port {port}")
-    
-    # Run with SSE transport for n8n compatibility
     mcp.run(transport="sse")
